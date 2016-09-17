@@ -1,0 +1,392 @@
+<?php
+
+header('Content-Type: text/html; charset=utf-8');
+
+function _fetch($url){
+
+    $ch = curl_init($url);
+
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+
+    $response = curl_exec($ch);
+
+    return json_decode($response);
+
+}
+
+
+
+function multiRequest($data, $options = array()) {
+
+
+
+  $curly = array();
+
+  $result = array();
+
+  $mh = curl_multi_init();
+
+
+
+  foreach ($data as $id => $d) {
+
+    $curly[$id] = curl_init($d);
+
+
+
+    curl_setopt($curly[$id], CURLOPT_RETURNTRANSFER, 1);
+
+    curl_setopt($curly[$id], CURLOPT_SSL_VERIFYPEER, false);
+
+    curl_setopt($curly[$id], CURLOPT_SSL_VERIFYHOST, 0);
+
+
+
+    curl_multi_add_handle($mh, $curly[$id]);
+
+  }
+
+
+
+  $running = null;
+
+  do {
+
+    curl_multi_exec($mh, $running);
+
+  } while($running > 0);
+
+
+
+
+
+  foreach($curly as $id => $c) {
+
+    $result[$id] = json_decode(curl_multi_getcontent($c));
+
+    curl_multi_remove_handle($mh, $c);
+
+  }
+
+
+
+  curl_multi_close($mh);
+
+
+
+  return $result;
+
+}
+
+
+
+function calculateStarttimeDifference($currentTime,$dataString) {
+
+  return strtotime($dataString)-$currentTime;
+
+}
+
+
+
+function compareVenue($a,$b) {
+
+  if ($a['venueName'] < $b['venueName'])
+
+    return -1;
+
+  if ($a['venueName'] > $b['venueName'])
+
+    return 1;
+
+  return 0;
+
+}
+
+
+
+function compareTimeFromNow($a,$b) {
+
+  if ($a['eventTimeFromNow'] < $b['eventTimeFromNow'])
+
+    return -1;
+
+  if ($a['eventTimeFromNow'] > $b['eventTimeFromNow'])
+
+    return 1;
+
+  return 0;
+
+}
+
+
+
+function compareDistance($a,$b) {
+
+  $aEventDistInt = (int)($a['eventDistance']);
+
+  $bEventDistInt = (int)($b['eventDistance']);
+
+  if ($aEventDistInt < $bEventDistInt)
+
+    return -1;
+
+  if ($aEventDistInt > $bEventDistInt)
+
+    return 1;
+
+  return 0;
+
+}
+
+
+
+function comparePopularity($a,$b) {
+
+  if (($a['eventStats']['attendingCount'] + ($a['eventStats']['maybeCount'] / 2)) < ($b['eventStats']['attendingCount'] + ($b['eventStats']['maybeCount'] / 2)))
+
+    return 1;
+
+  if (($a['eventStats']['attendingCount'] + ($a['eventStats']['maybeCount'] / 2)) > ($b['eventStats']['attendingCount'] + ($b['eventStats']['maybeCount'] / 2)))
+
+    return -1;
+
+  return 0;
+
+}
+
+
+
+function haversineDistance($coords1, $coords2, $isMiles) {
+
+
+
+  $theta = $coords1[1] - $coords2[1];
+
+  $dist = sin(deg2rad($coords1[0])) * sin(deg2rad($coords2[0])) +  cos(deg2rad($coords1[0])) * cos(deg2rad($coords2[0])) * cos(deg2rad($theta));
+
+  $dist = acos($dist);
+
+  $dist = rad2deg($dist);
+
+  $miles = $dist * 60 * 1.1515;
+
+
+
+  return ($miles * 1.609344);
+
+  
+
+}
+
+
+
+function getFacebookEvent( $token ,$lat, $lng, $distance){
+
+	 $idLimit = 50; //FB only allows 50 ids per /?ids= call
+
+    $currentTimestamp = time();
+
+    $venuesCount = 0;
+
+    $venuesWithEvents = 0;
+
+    $eventsCount = 0;
+
+    $url = 'https://graph.facebook.com/v2.5/search?type=place&q=%2A&';
+   $url = $url.'center';
+$url = $url.'=';
+   $url = $url.$lat.'%2C'.$lng.'&distance='.($distance*1000).'&limit=1000&fields=id&access_token='.$token;
+wp_die($url);
+
+		exit;
+    $responseBody = _fetch($url);
+
+    // print_r($responseBody);
+
+
+
+    $ids = array();
+
+    $tempArray = array();
+
+    // print_r($responseBody);
+
+    $data = $responseBody->data;
+
+
+
+    //Set venueCount
+
+    $venuesCount = count($data);
+
+    //Create array of 50 places each
+
+	if(is_null($data)){
+
+		wp_die("Error with facebook integration".$url);
+
+		exit;
+
+	}
+
+    foreach($data as $idObj){
+
+      array_push($tempArray,$idObj->id);
+
+      if(count($tempArray) >= $idLimit){
+
+        array_push($ids,$tempArray);
+
+        $tempArray = array();
+
+      }
+
+    }
+
+
+
+    // Push the remaining places
+
+    if (count($tempArray) > 0) {
+
+      array_push($ids,$tempArray);
+
+    }
+
+
+
+    $urls = array();
+
+
+
+    //Create a Graph API request array
+
+    foreach($ids as $idArray) {
+
+      array_push($urls,"https://graph.facebook.com/v2.5/?ids=" . implode(',',$idArray) . "&fields=id,name,cover.fields(id,source),picture.type(large),location,events.fields(id,name,cover.fields(id,source),picture.type(large),description,start_time,attending_count,declined_count,maybe_count,noreply_count).since(" . $currentTimestamp . ")&access_token=".$token);
+
+    }
+
+    $results = multiRequest($urls);
+
+    $events = array();
+
+    foreach($results as $resStr) {
+
+      $resObj = $resStr;
+
+      foreach ($resObj as $venue){
+
+
+
+        if (isset($venue->events) && count($venue->events->data) > 0) {
+
+          $venuesWithEvents++;
+
+          foreach($venue->events->data as $index => $event) {
+
+            $eventResultObj = array();
+
+            $eventResultObj['venueId'] = $venue->id;
+
+            $eventResultObj['venueName'] = $venue->name;
+
+            $eventResultObj['venueCoverPicture'] = ($venue->cover ? $venue->cover->source : null);
+
+            $eventResultObj['venueProfilePicture'] = ($venue->picture ? $venue->picture->data->url : null);
+
+            $eventResultObj['venueLocation'] = ($venue->location ? $venue->location : null);
+
+            $eventResultObj['eventId'] = $event->id;
+
+            $eventResultObj['eventName'] = $event->name;
+
+            $eventResultObj['eventCoverPicture'] = ($event->cover ? $event->cover->source : null);
+
+            $eventResultObj['eventProfilePicture'] = ($event->picture ? $event->picture->data->url : null);
+
+            $eventResultObj['eventDescription'] = ($event->description ? $event->description : null);
+
+            $eventResultObj['eventStarttime'] = ($event->start_time ? $event->start_time : null);
+
+			$eventResultObj['eventEndTime'] = ($event->end_time ? $event->end_time : null);
+
+            $eventResultObj['eventDistance'] = ($venue->location ? round((haversineDistance(array($venue->location->latitude, $venue->location->longitude), array($lat, $lng), false)*1000),2) : null);
+
+            $eventResultObj['eventTimeFromNow'] = calculateStarttimeDifference($currentTimestamp, $event->start_time);
+
+            $eventResultObj['eventStats'] = array(
+
+              'attendingCount'=>$event->attending_count,
+
+              'declinedCount'=>$event->declined_count,
+
+              'maybeCount'=>$event->maybe_count,
+
+              'noreplyCount'=>$event->noreply_count
+
+            );
+
+            array_push($events, $eventResultObj);
+
+            $eventsCount++;
+
+          }
+
+        }
+
+      }
+
+    }
+
+
+
+    //Sort if requested
+
+    if (isset($_GET['sort']) && (strtolower($_GET['sort']) === "time" || strtolower($_GET['sort']) === "distance" || strtolower($_GET['sort']) === "venue" || strtolower($_GET['sort']) === "popularity")) {
+
+      if (strtolower($_GET['sort']) === "time") {
+
+        usort($events,'compareTimeFromNow');
+
+      }
+
+      if (strtolower($_GET['sort']) === "distance") {
+
+        usort($events,'compareDistance');
+
+      }
+
+      if (strtolower($_GET['sort']) === "venue") {
+
+        usort($events,'compareVenue');
+
+      }
+
+      if (strtolower($_GET['sort']) === "popularity") {
+
+        usort($events,'comparePopularity');
+
+      }
+
+    }
+
+
+
+    //Produce result object
+
+	// $send = array('events'=>$events,'metadata'=>array('venues'=>$venuesCount,'venuesWithEvents'=>$venuesWithEvents,'events'=>$eventsCount));
+
+    //json_encode($send, JSON_UNESCAPED_UNICODE);
+
+	return $events;
+
+}
+
+
+
+?>
